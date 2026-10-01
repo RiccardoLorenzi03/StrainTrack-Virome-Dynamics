@@ -45,6 +45,14 @@ python src/models/trajectory_clustering.py \
     --table-out results/tables/trajectory_summary.csv \
     --fig-out results/figures/trajectory_clusters.png
 
+echo "=== [STAGE 5] Exporting Publication-Grade Figures ==="
+python src/visualization/generate_publication_figures.py \
+    --traj-input data/processed/strain_trajectories.csv \
+    --network-input results/tables/network_metrics.csv \
+    --summary-input results/tables/trajectory_summary.csv \
+    --snv-input data/raw/snv_frequencies.csv \
+    --out-dir results/figures/publication/
+
 echo "=========================================================================="
-echo " STATUS: Pipeline execution completed successfully. All metrics validated. "
+echo " STATUS: Pipeline execution completed successfully. All figures saved.   "
 echo "=========================================================================="
