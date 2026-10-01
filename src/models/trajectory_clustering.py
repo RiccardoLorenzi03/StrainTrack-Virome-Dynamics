@@ -9,6 +9,25 @@ from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
 
+def detect_column(df: pd.DataFrame, candidates: list[str], fallback_type: str = "string") -> str:
+    """Dynamically identifies target column based on naming heuristics or data type fallback."""
+    for col in candidates:
+        for c in df.columns:
+            if col.lower() in str(c).lower():
+                return c
+    
+    if fallback_type == "numeric":
+        num_cols = df.select_dtypes(include=[np.number]).columns
+        if not num_cols.empty:
+            return num_cols[0]
+    else:
+        obj_cols = df.select_dtypes(include=["object", "category"]).columns
+        if not obj_cols.empty:
+            return obj_cols[0]
+
+    return df.columns[0]
+
+
 def run_trajectory_clustering(
     traj_path: str,
     virome_path: str,
@@ -17,37 +36,72 @@ def run_trajectory_clustering(
     fig_out: str,
     n_clusters: int = 2
 ) -> None:
-    """Performs unsupervised longitudinal trajectory clustering using PCA and k-means."""
-    df_traj = pd.read_csv(traj_path, index_col=0)
+    """Performs fully agnostic longitudinal trajectory clustering on arbitrary datasets."""
+    df_traj = pd.read_csv(traj_path)
     df_vir = pd.read_csv(virome_path, index_col=0)
-    df_meta = pd.read_csv(meta_path, index_col=0)
+    df_meta = pd.read_csv(meta_path)
+
+    # Ripristina indici o colonne ID se sono stati salvati come prima colonna senza nome
+    if "Unnamed: 0" in df_meta.columns:
+        df_meta = df_meta.rename(columns={"Unnamed: 0": "sample_id"}).set_index("sample_id")
+    elif "sample_id" in df_meta.columns:
+        df_meta = df_meta.set_index("sample_id")
+
+    if "Unnamed: 0" in df_traj.columns:
+        df_traj = df_traj.rename(columns={"Unnamed: 0": "index_id"})
+
+    # Identificazione dinamica delle colonne nei metadati
+    pid_col = detect_column(df_meta, ["patient_id", "subject_id", "host_id", "patient", "subject"])
+    time_col = detect_column(df_meta, ["timepoint", "time", "visit", "tp"])
+    resp_col = detect_column(df_meta, ["clinical_response", "response", "status", "group", "phenotype"])
+
+    # Identificazione della colonna di drift nello Stage 2
+    traj_pid_col = detect_column(df_traj, ["patient_id", "subject_id", "host_id", "patient", "subject"])
+    traj_drift_col = detect_column(df_traj, ["genomic_drift", "drift", "distance", "pi_drift"], fallback_type="numeric")
 
     patient_features = []
-    patient_ids = df_meta["patient_id"].unique()
+    patient_ids = df_meta[pid_col].dropna().unique()
 
     for pid in patient_ids:
-        p_samples = df_meta[df_meta["patient_id"] == pid].index
-        p_t0 = df_meta[(df_meta["patient_id"] == pid) & (df_meta["timepoint"] == "t0")].index
-        p_t1 = df_meta[(df_meta["patient_id"] == pid) & (df_meta["timepoint"] == "t1")].index
-
-        if len(p_t0) == 0 or len(p_t1) == 0:
+        p_meta = df_meta[df_meta[pid_col] == pid]
+        
+        timepoints = p_meta[time_col].dropna().unique()
+        if len(timepoints) < 2:
             continue
 
-        s_t0, s_t1 = p_t0[0], p_t1[0]
+        t0_val = "t0" if "t0" in timepoints else timepoints[0]
+        t1_val = "t1" if "t1" in timepoints else timepoints[1]
 
-        # Drift dal modulo di diversità di ceppo
-        drift_val = df_traj.loc[df_traj["patient_id"] == pid, "genomic_drift"].values
-        drift = drift_val[0] if len(drift_val) > 0 else 0.0
+        p_t0 = p_meta[p_meta[time_col] == t0_val]
+        p_t1 = p_meta[p_meta[time_col] == t1_val]
 
-        # Spostamento dinamico su TUTTE le feature del viroma
-        v_t0 = df_vir.loc[s_t0].values
-        v_t1 = df_vir.loc[s_t1].values
+        if p_t0.empty or p_t1.empty:
+            continue
+
+        s_t0, s_t1 = p_t0.index[0], p_t1.index[0]
+
+        if s_t0 not in df_vir.index or s_t1 not in df_vir.index:
+            continue
+
+        # Estrazione agnostica del drift
+        p_traj = df_traj[df_traj[traj_pid_col] == pid]
+        drift = 0.0
+        if not p_traj.empty:
+            val = pd.to_numeric(p_traj[traj_drift_col].values[0], errors="coerce")
+            drift = float(val) if not np.isnan(val) else 0.0
+
+        # Calcolo dello spostamento su tutte le feature numeriche del viroma
+        v_t0 = pd.to_numeric(df_vir.loc[s_t0], errors="coerce").fillna(0.0).values
+        v_t1 = pd.to_numeric(df_vir.loc[s_t1], errors="coerce").fillna(0.0).values
         v_shift = v_t1 - v_t0
 
-        response = df_meta.loc[s_t0, "clinical_response"] if "clinical_response" in df_meta.columns else "Unknown"
+        response = str(p_t0[resp_col].values[0]) if resp_col in p_t0.columns else "Unknown"
 
         feat_vec = [drift] + list(v_shift)
         patient_features.append({"patient_id": pid, "clinical_response": response, "features": feat_vec})
+
+    if not patient_features:
+        raise RuntimeError("No valid longitudinal patient pairs found across the input datasets.")
 
     df_feat = pd.DataFrame(patient_features)
     X = np.array(df_feat["features"].tolist())
@@ -101,12 +155,13 @@ def run_trajectory_clustering(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Unsupervised Trajectory Clustering")
+    parser = argparse.ArgumentParser(description="Fully Agnostic Unsupervised Trajectory Clustering")
     parser.add_argument("--traj-input", required=True)
     parser.add_argument("--virome-input", required=True)
     parser.add_argument("--meta-input", required=True)
     parser.add_argument("--table-out", required=True)
     parser.add_argument("--fig-out", required=True)
+    parser.add_argument("--n-clusters", type=int, default=2)
     args = parser.parse_args()
 
     run_trajectory_clustering(
@@ -114,7 +169,8 @@ def main() -> None:
         args.virome_input,
         args.meta_input,
         args.table_out,
-        args.fig_out
+        args.fig_out,
+        n_clusters=args.n_clusters
     )
 
 
