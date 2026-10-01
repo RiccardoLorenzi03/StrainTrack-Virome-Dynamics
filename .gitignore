@@ -1,0 +1,9 @@
+data/raw/*
+data/processed/*
+results/*
+!results/tables/*.csv
+!results/figures/*.png
+!results/.gitkeep
+*.log
+.DS_Store
+__pycache__/
