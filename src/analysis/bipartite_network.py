@@ -7,17 +7,16 @@ import pandas as pd
 
 
 def build_bipartite_interaction_network(snv_path: str, virome_path: str, table_out: str, fig_out: str) -> None:
+    """Mines cross-domain interaction networks between bacterial genomic loci and viral clusters."""
     df_snv = pd.read_csv(snv_path, index_col=0)
     df_vir = pd.read_csv(virome_path, index_col=0)
 
-    # Selezione dinamica delle prime N feature per ciascun dominio (max 15 per leggibilità del grafo)
     n_snv = min(15, df_snv.shape[1])
     n_vir = min(15, df_vir.shape[1])
 
     snv_sub = df_snv.iloc[:, :n_snv]
     vir_sub = df_vir.iloc[:, :n_vir]
 
-    # Calcolo dinamico della matrice di correlazione cross-domain
     corr_full = np.corrcoef(snv_sub.values.T, vir_sub.values.T)
     corr_matrix = pd.DataFrame(
         corr_full[:n_snv, n_snv:],
@@ -94,7 +93,7 @@ def build_bipartite_interaction_network(snv_path: str, virome_path: str, table_o
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Mining Phage-Host Bipartite Interaction Networks")
     parser.add_argument("--snv-input", required=True)
     parser.add_argument("--virome-input", required=True)
     parser.add_argument("--table-out", required=True)
